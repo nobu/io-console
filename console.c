@@ -4,6 +4,10 @@
  */
 #include "ruby.h"
 #include "rubyio.h"
+#ifndef HAVE_RB_IO_T
+typedef OpenFile rb_io_t;
+#endif
+
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #endif
@@ -49,19 +53,38 @@ typedef struct sgttyb conmode;
 #elif defined _WIN32
 #include <winioctl.h>
 typedef DWORD conmode;
-#  define setattr(fd, t) SetConsoleMode((HANDLE)rb_w32_get_osfhandle(fd), *t)
-#  define getattr(fd, t) GetConsoleMode((HANDLE)rb_w32_get_osfhandle(fd), t)
+
+#ifdef HAVE_RB_W32_MAP_ERRNO
+#define LAST_ERROR rb_w32_map_errno(GetLastError())
+#else
+#define LAST_ERROR EBADF
+#endif
+
+static int
+setattr(int fd, conmode *t)
+{
+    int x = SetConsoleMode((HANDLE)rb_w32_get_osfhandle(fd), *t);
+    if (!x) errno = LAST_ERROR;
+    return x;
+}
+
+static int
+getattr(int fd, conmode *t)
+{
+    int x = GetConsoleMode((HANDLE)rb_w32_get_osfhandle(fd), t);
+    if (!x) errno = LAST_ERROR;
+    return x;
+}
 #endif
 
 static ID id_getc, id_console;
 
-#ifdef HAVE_CFMAKERAW
-#define set_rawmode cfmakeraw
-#else
-static int
-set_rawmode(t)
-    conmode *t;
+static void
+set_rawmode(conmode *t)
 {
+#ifdef HAVE_CFMAKERAW
+    cfmakeraw(t);
+#else
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     t->c_iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON);
     t->c_oflag &= ~OPOST;
@@ -74,13 +97,11 @@ set_rawmode(t)
 #elif defined _WIN32
     *t = 0;
 #endif
-    return 0;
-}
 #endif
+}
 
 static void
-set_noecho(t)
-    conmode *t;
+set_noecho(conmode *t)
 {
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     t->c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
@@ -92,8 +113,7 @@ set_noecho(t)
 }
 
 static void
-set_echo(t)
-    conmode *t;
+set_echo(conmode *t)
 {
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     t->c_lflag |= (ECHO | ECHOE | ECHOK | ECHONL);
@@ -105,8 +125,7 @@ set_echo(t)
 }
 
 static int
-echo_p(t)
-    conmode *t;
+echo_p(conmode *t)
 {
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     return (t->c_lflag & (ECHO | ECHOE | ECHOK | ECHONL)) != 0;
@@ -118,37 +137,40 @@ echo_p(t)
 }
 
 static int
-set_ttymode(fd, t, setter)
-    int fd;
-    conmode *t;
-    void (*setter) _((conmode *));
+set_ttymode(int fd, conmode *t, void (*setter)(conmode *))
 {
     conmode r;
-    if (!getattr(fd, t)) return -1;
+    if (!getattr(fd, t)) return 0;
     r = *t;
     setter(&r);
     return setattr(fd, &r);
 }
 
+#ifdef GetReadFile
+#define FD_PER_IO 2
+#else
+#define FD_PER_IO 1
+#endif
+
 static VALUE
-ttymode(io, func, setter)
-    VALUE io;
-    VALUE (*func) _((VALUE));
-    void (*setter) _((conmode *));
+ttymode(VALUE io, VALUE (*func)(VALUE), void (*setter)(conmode *))
 {
     rb_io_t *fptr;
-    int fd1 = -1, status = 0;
-#ifdef GetReadFile
-    int fd2 = -1, error = 0;
+    int status = 0;
+#if FD_PER_IO > 1
+    int error = 0;
 #endif
-    conmode t[2];
+    int fd[FD_PER_IO];
+    conmode t[FD_PER_IO];
     VALUE result = Qnil;
 
     GetOpenFile(io, fptr);
+    fd[0] = -1;
 #ifdef GetReadFile
+    fd[1] = -1;
     if (fptr->f) {
 	if (set_ttymode(fileno(fptr->f), t+0, setter)) {
-	    fd1 = fileno(fptr->f);
+	    fd[0] = fileno(fptr->f);
 	}
 	else {
 	    error = errno;
@@ -157,7 +179,7 @@ ttymode(io, func, setter)
     }
     if (fptr->f2 && status == 0) {
 	if (set_ttymode(fileno(fptr->f2), t+1, setter)) {
-	    fd2 = fileno(fptr->f2);
+	    fd[1] = fileno(fptr->f2);
 	}
 	else {
 	    error = errno;
@@ -167,14 +189,14 @@ ttymode(io, func, setter)
     if (status == 0) {
 	result = rb_protect(func, io, &status);
     }
-    if (fptr->f && fd1 == fileno(fptr->f)) {
-	if (!setattr(fd1, t+0)) {
+    if (fptr->f && fd[0] == fileno(fptr->f)) {
+	if (!setattr(fd[0], t+0)) {
 	    error = errno;
 	    status = -1;
 	}
     }
-    if (fptr->f2 && fd2 == fileno(fptr->f2)) {
-	if (!setattr(fd2, t+1)) {
+    if (fptr->f2 && fd[1] == fileno(fptr->f2)) {
+	if (!setattr(fd[1], t+1)) {
 	    error = errno;
 	    status = -1;
 	}
@@ -189,14 +211,14 @@ ttymode(io, func, setter)
 #else
     if (fptr->fd != -1) {
 	if (!set_ttymode(fptr->fd, t+0, setter)) {
-	    rb_sys_fail(0);
+	    rb_sys_fail("set_ttymode");
 	}
-	fd1 = fptr->fd;
+	fd[0] = fptr->fd;
     }
     result = rb_protect(func, io, &status);
-    if (fd1 != -1 && fd1 == fptr->fd) {
-	if (!setattr(fd1, t+0)) {
-	    rb_sys_fail(0);
+    if (fd[0] != -1 && fd[0] == fptr->fd) {
+	if (!setattr(fd[0], t+0)) {
+	    rb_sys_fail("restore_ttymode");
 	}
     }
     if (status) {
@@ -224,7 +246,7 @@ static VALUE
 console_getch(io)
     VALUE io;
 {
-    return ttymode(io, getch, set_rawmode);
+    return ttymode(io, (VALUE (*)(VALUE))getch, set_rawmode);
 }
 
 static VALUE
@@ -254,8 +276,7 @@ console_set_echo(io, f)
 }
 
 static VALUE
-console_echo_p(io)
-    VALUE io;
+console_echo_p(VALUE io)
 {
     conmode t;
     rb_io_t *fptr;
@@ -306,6 +327,9 @@ console_ioflush(io)
     VALUE io;
 {
     rb_io_t *fptr;
+#ifdef GetReadFile
+    FILE *f2;
+#endif
 
     GetOpenFile(io, fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H

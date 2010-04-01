@@ -4,6 +4,7 @@ ok = true
 hdr = nil
 case
 when macro_defined?("_WIN32", "")
+  have_func("rb_w32_map_errno", "ruby.h")
 when hdr = %w"termios.h termio.h".find {|h| have_header(h)}
   have_func("cfmakeraw", hdr)
 when have_header(hdr = "sgtty.h")
