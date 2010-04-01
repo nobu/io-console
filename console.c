@@ -376,6 +376,7 @@ console_dev(VALUE klass)
     VALUE con = 0;
     rb_io_t *fptr;
 
+    if (klass == rb_cIO) klass = rb_cFile;
     if (rb_const_defined(klass, id_console)) {
 	con = rb_const_get(klass, id_console);
 	if (TYPE(con) == T_FILE) {
@@ -387,30 +388,39 @@ console_dev(VALUE klass)
     {
 	VALUE args[2];
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H || defined HAVE_SGTTY_H
-#define CONSOLE_DEVISE "/dev/tty"
+# define CONSOLE_DEVISE "/dev/tty"
 #elif defined _WIN32
-#define CONSOLE_DEVISE "CON$"
+# define CONSOLE_DEVISE "con$"
+# define CONSOLE_DEVISE_FOR_READING "conin$"
+# define CONSOLE_DEVISE_FOR_WRITING "conout$"
 #endif
-
-#if defined GetReadFile && defined _WIN32
+#ifndef CONSOLE_DEVISE_FOR_READING
+# define CONSOLE_DEVISE_FOR_READING CONSOLE_DEVISE
+#endif
+#ifdef CONSOLE_DEVISE_FOR_WRITING
 	VALUE out;
 	rb_io_t *ofptr;
-
-	args[0] = rb_str_new2("CONOUT$");
-	args[1] = INT2FIX(O_WRONLY);
-	out = rb_class_new_instance(2, args, klass);
-	args[0] = rb_str_new2("CONIN$");
-	args[1] = INT2FIX(O_RDONLY);
-#else
-	args[0] = rb_str_new2(CONSOLE_DEVISE);
-	args[1] = INT2FIX(O_RDWR);
 #endif
+
+	args[1] = INT2FIX(O_RDWR);
+#ifdef CONSOLE_DEVISE_FOR_WRITING
+	args[0] = rb_str_new2(CONSOLE_DEVISE_FOR_WRITING);
+	out = rb_class_new_instance(2, args, klass);
+#endif
+	args[0] = rb_str_new2(CONSOLE_DEVISE_FOR_READING);
 	con = rb_class_new_instance(2, args, klass);
-#if defined GetReadFile && defined _WIN32
+#ifdef CONSOLE_DEVISE_FOR_WRITING
 	GetOpenFile(con, fptr);
 	GetOpenFile(out, ofptr);
+# ifdef HAVE_RB_IO_GET_WRITE_IO
+#   ifdef _WIN32
+	ofptr->pathv = fptr->pathv = rb_str_new2(CONSOLE_DEVISE);
+#   endif
+	fptr->tied_io_for_writing = out;
+# else
 	fptr->f2 = ofptr->f;
 	ofptr->f = 0;
+# endif
 	fptr->mode |= FMODE_WRITABLE;
 #endif
 	rb_const_set(klass, id_console, con);
@@ -432,5 +442,5 @@ Init_console(void)
     rb_define_method(rb_cIO, "iflush", console_iflush, 0);
     rb_define_method(rb_cIO, "oflush", console_oflush, 0);
     rb_define_method(rb_cIO, "ioflush", console_ioflush, 0);
-    rb_define_singleton_method(rb_cFile, "console", console_dev, 0);
+    rb_define_singleton_method(rb_cIO, "console", console_dev, 0);
 }
