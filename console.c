@@ -229,36 +229,31 @@ ttymode(VALUE io, VALUE (*func)(VALUE), void (*setter)(conmode *))
 }
 
 static VALUE
-console_raw(io)
-    VALUE io;
+console_raw(VALUE io)
 {
     return ttymode(io, rb_yield, set_rawmode);
 }
 
 static VALUE
-getch(io)
-    VALUE io;
+getch(VALUE io)
 {
     return rb_funcall2(io, id_getc, 0, 0);
 }
 
 static VALUE
-console_getch(io)
-    VALUE io;
+console_getch(VALUE io)
 {
     return ttymode(io, (VALUE (*)(VALUE))getch, set_rawmode);
 }
 
 static VALUE
-console_noecho(io)
-    VALUE io;
+console_noecho(VALUE io)
 {
     return ttymode(io, rb_yield, set_noecho);
 }
 
 static VALUE
-console_set_echo(io, f)
-    VALUE io, f;
+console_set_echo(VALUE io, VALUE f)
 {
     conmode t;
     rb_io_t *fptr;
@@ -289,8 +284,7 @@ console_echo_p(VALUE io)
 }
 
 static VALUE
-console_iflush(io)
-    VALUE io;
+console_iflush(VALUE io)
 {
     rb_io_t *fptr;
     int fd;
@@ -304,8 +298,7 @@ console_iflush(io)
 }
 
 static VALUE
-console_oflush(io)
-    VALUE io;
+console_oflush(VALUE io)
 {
     rb_io_t *fptr;
     int fd;
@@ -323,8 +316,7 @@ console_oflush(io)
 }
 
 static VALUE
-console_ioflush(io)
-    VALUE io;
+console_ioflush(VALUE io)
 {
     rb_io_t *fptr;
 #ifdef GetReadFile
@@ -350,8 +342,7 @@ console_ioflush(io)
 
 #ifdef HAVE_TERMIOS_H
 static VALUE
-console_get_winsize(io)
-    VALUE io;
+console_get_winsize(VALUE io)
 {
     rb_io_t *fptr;
     struct winsize w;
@@ -364,8 +355,7 @@ console_get_winsize(io)
 }
 
 static VALUE
-console_set_winsize(io, size)
-    VALUE io, size;
+console_set_winsize(VALUE io, VALUE size)
 {
     rb_io_t *fptr;
     struct winsize w;
@@ -388,8 +378,7 @@ console_set_winsize(io, size)
 #endif
 
 static VALUE
-console_dev(klass)
-    VALUE klass;
+console_dev(VALUE klass)
 {
     VALUE con = 0;
     rb_io_t *fptr;
@@ -443,7 +432,7 @@ console_dev(klass)
 }
 
 void
-Init_console()
+Init_console(void)
 {
     id_getc = rb_intern("getc");
     id_console = rb_intern("console");
