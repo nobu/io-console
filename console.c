@@ -3,7 +3,12 @@
  * console IO module
  */
 #include "ruby.h"
+#ifdef HAVE_RUBY_IO_H
+#include "ruby/io.h"
+#else
 #include "rubyio.h"
+#endif
+
 #ifndef HAVE_RB_IO_T
 typedef OpenFile rb_io_t;
 #endif
