@@ -14,11 +14,10 @@ typedef OpenFile rb_io_t;
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
 #endif
+#ifdef HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
-
-#ifndef HAVE_RB_IO_T
-typedef OpenFile rb_io_t;
 #endif
+
 #ifdef GetReadFile
 #define GetReadFileNo(fptr) fileno(GetReadFile(fptr))
 #define GetWriteFileNo(fptr) fileno(GetWriteFile(fptr))
@@ -59,6 +58,7 @@ typedef DWORD conmode;
 #else
 #define LAST_ERROR EBADF
 #endif
+#define SET_LAST_ERROR (errno = LAST_ERROR, 0)
 
 static int
 setattr(int fd, conmode *t)
@@ -283,6 +283,49 @@ console_echo_p(VALUE io)
     return echo_p(&t) ? Qtrue : Qfalse;
 }
 
+#if defined TIOCGWINSZ
+typedef struct winsize rb_console_size_t;
+#define getwinsize(fd, buf) (ioctl((fd), TIOCGWINSZ, (buf)) == 0)
+#define winsize_row(buf) (buf)->ws_row
+#define winsize_col(buf) (buf)->ws_col
+#elif defined _WIN32
+typedef CONSOLE_SCREEN_BUFFER_INFO rb_console_size_t;
+#define getwinsize(fd, buf) ( \
+    GetConsoleScreenBufferInfo((HANDLE)rb_w32_get_osfhandle(fd), (buf)) || \
+    SET_LAST_ERROR)
+#define winsize_row(buf) (buf)->dwSize.Y
+#define winsize_col(buf) (buf)->dwSize.X
+#endif
+
+#if defined TIOCGWINSZ || defined _WIN32
+#define USE_CONSOLE_GETSIZE 1
+#endif
+
+#ifdef USE_CONSOLE_GETSIZE
+static VALUE
+console_winsize(VALUE io)
+{
+    rb_io_t *fptr;
+    int fd;
+    rb_console_size_t ws;
+
+    GetOpenFile(io, fptr);
+#ifdef GetWriteFile
+    fd = fileno(GetWriteFile(fptr));
+#else
+# if defined HAVE_RB_IO_GET_WRITE_IO
+    io = fptr->tied_io_for_writing;
+    if (io) {
+	GetOpenFile(io, fptr);
+    }
+# endif
+    fd = fptr->fd;
+#endif
+    if (!getwinsize(fd, &ws)) rb_sys_fail(0);
+    return rb_assoc_new(INT2NUM(winsize_row(&ws)), INT2NUM(winsize_col(&ws)));
+}
+#endif
+
 static VALUE
 console_iflush(VALUE io)
 {
@@ -339,43 +382,6 @@ console_ioflush(VALUE io)
 #endif
     return io;
 }
-
-#ifdef HAVE_TERMIOS_H
-static VALUE
-console_get_winsize(VALUE io)
-{
-    rb_io_t *fptr;
-    struct winsize w;
-
-    GetOpenFile(io, fptr);
-    if (ioctl(GetReadFileNo(fptr), TIOCGWINSZ, &w) < 0) rb_sys_fail(0);
-    return rb_ary_new3(4,
-		       INT2NUM(w.ws_row), INT2NUM(w.ws_col),
-		       INT2NUM(w.ws_xpixel), INT2NUM(w.ws_ypixel));
-}
-
-static VALUE
-console_set_winsize(VALUE io, VALUE size)
-{
-    rb_io_t *fptr;
-    struct winsize w;
-    VALUE row, col, xpixel, ypixel;
-
-    GetOpenFile(io, fptr);
-    size = rb_Array(size);
-    rb_scan_args(RARRAY_LEN(size), RARRAY_PTR(size), "22",
-		 &row, &col, &xpixel, &ypixel);
-    w.ws_row = w.ws_col = w.ws_xpixel = w.ws_ypixel = 0;
-#define SET(m) w.ws_##m = NIL_P(m) ? 0 : (unsigned short)NUM2UINT(m)
-    SET(row);
-    SET(col);
-    SET(xpixel);
-    SET(ypixel);
-#undef SET
-    if (ioctl(GetReadFileNo(fptr), TIOCSWINSZ, &w) < 0) rb_sys_fail(0);
-    return io;
-}
-#endif
 
 static VALUE
 console_dev(VALUE klass)
@@ -441,12 +447,9 @@ Init_console(void)
     rb_define_method(rb_cIO, "echo=", console_set_echo, 1);
     rb_define_method(rb_cIO, "echo?", console_echo_p, 0);
     rb_define_method(rb_cIO, "noecho", console_noecho, 0);
+    rb_define_method(rb_cIO, "winsize", console_winsize, 0);
     rb_define_method(rb_cIO, "iflush", console_iflush, 0);
     rb_define_method(rb_cIO, "oflush", console_oflush, 0);
     rb_define_method(rb_cIO, "ioflush", console_ioflush, 0);
-#ifdef HAVE_TERMIOS_H
-    rb_define_method(rb_cIO, "winsize", console_get_winsize, 0);
-    rb_define_method(rb_cIO, "winsize=", console_set_winsize, 1);
-#endif
     rb_define_singleton_method(rb_cFile, "console", console_dev, 0);
 }

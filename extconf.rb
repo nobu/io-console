@@ -12,6 +12,8 @@ when have_header(hdr = "sgtty.h")
 else
   ok = false
 end
+have_header("sys/ioctl.h")
+have_func("rb_io_get_write_io", "ruby/io.h")
 if ok
   create_makefile("io/console")
 end
