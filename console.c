@@ -77,6 +77,10 @@ getattr(int fd, conmode *t)
 #define SET_LAST_ERROR (0)
 #endif
 
+#ifndef InitVM
+#define InitVM(ext) {void InitVM_##ext(void);InitVM_##ext();}
+#endif
+
 static ID id_getc, id_console;
 
 static void
@@ -509,6 +513,12 @@ Init_console(void)
 {
     id_getc = rb_intern("getc");
     id_console = rb_intern("console");
+    InitVM(console);
+}
+
+void
+InitVM_console(void)
+{
     rb_define_method(rb_cIO, "raw", console_raw, 0);
     rb_define_method(rb_cIO, "getch", console_getch, 0);
     rb_define_method(rb_cIO, "echo=", console_set_echo, 1);
