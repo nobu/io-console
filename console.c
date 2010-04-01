@@ -143,6 +143,56 @@ console_noecho(io)
 }
 
 static VALUE
+console_iflush(io)
+    VALUE io;
+{
+    OpenFile *fptr;
+    FILE *f;
+
+    GetOpenFile(io, fptr);
+    f = GetReadFile(fptr);
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    if (tcflush(fileno(f), TCIFLUSH)) rb_sys_fail(0);
+#endif
+    return io;
+}
+
+static VALUE
+console_oflush(io)
+    VALUE io;
+{
+    OpenFile *fptr;
+    FILE *f;
+
+    GetOpenFile(io, fptr);
+    f = GetWriteFile(fptr);
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    if (tcflush(fileno(f), TCOFLUSH)) rb_sys_fail(0);
+#endif
+    return io;
+}
+
+static VALUE
+console_ioflush(io)
+    VALUE io;
+{
+    OpenFile *fptr;
+    FILE *f1, *f2;
+
+    GetOpenFile(io, fptr);
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    if (fptr->f2) {
+	if (tcflush(fileno(fptr->f), TCIFLUSH)) rb_sys_fail(0);
+	if (tcflush(fileno(fptr->f2), TCOFLUSH)) rb_sys_fail(0);
+    }
+    else {
+	if (tcflush(fileno(fptr->f), TCIOFLUSH)) rb_sys_fail(0);
+    }
+#endif
+    return io;
+}
+
+static VALUE
 console_dev(klass)
     VALUE klass;
 {
@@ -192,5 +242,8 @@ Init_console()
     rb_define_method(rb_cIO, "raw", console_raw, 0);
     rb_define_method(rb_cIO, "getch", console_getch, 0);
     rb_define_method(rb_cIO, "noecho", console_noecho, 0);
+    rb_define_method(rb_cIO, "iflush", console_iflush, 0);
+    rb_define_method(rb_cIO, "oflush", console_oflush, 0);
+    rb_define_method(rb_cIO, "ioflush", console_ioflush, 0);
     rb_define_singleton_method(rb_cFile, "console", console_dev, 0);
 }
