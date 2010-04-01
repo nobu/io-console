@@ -1,0 +1,33 @@
+= IO/Console
+
+== DESCRIPTION:
+
+IO/Console is a simple console utilizing library.
+
+== FEATURES:
+
+IO/Console provides very simple and portable access to console.  It
+doesn't provide higher layer features, such like curses and readline.
+
+== SYNOPSIS:
+
+  require 'io/console'
+
+  # Get a character from STDIN instantly.
+  ch = STDIN.getch
+
+  if ch == ?y or ch == ?Y
+    puts "yes"
+  end
+
+  ####
+  # Read a line without echo back.
+  hidden = STDIN.noecho(&:gets)
+  # the result includes a newline, but none of backspaces.
+
+  # Read a line without echo back nor line editing.
+  hidden = STDIN.raw(&:gets)
+  # the result includes a newline, backspaces and other special keys as you typed.
+
+  # Get the size of the console.
+  row, col = STDIN.winsize

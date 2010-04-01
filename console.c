@@ -226,6 +226,16 @@ ttymode(VALUE io, VALUE (*func)(VALUE), void (*setter)(conmode *))
     return result;
 }
 
+/*
+ * call-seq:
+ *   io.raw {|io| }
+ *
+ * Yields +self+ within raw mode.
+ *
+ *   STDIN.raw(&:gets)
+ *
+ * will read and return a line with echo back and line editing.
+ */
 static VALUE
 console_raw(VALUE io)
 {
@@ -238,18 +248,40 @@ getc_call(VALUE io)
     return rb_funcall2(io, id_getc, 0, 0);
 }
 
+/*
+ * call-seq:
+ *   io.getch       -> char
+ *
+ * Reads and returns a character in raw mode.
+ */
 static VALUE
 console_getch(VALUE io)
 {
     return ttymode(io, getc_call, set_rawmode);
 }
 
+/*
+ * call-seq:
+ *   io.noecho {|io| }
+ *
+ * Yields +self+ with disabling echo back.
+ *
+ *   STDIN.noecho(&:gets)
+ *
+ * will read and return a line without echo back.
+ */
 static VALUE
 console_noecho(VALUE io)
 {
     return ttymode(io, rb_yield, set_noecho);
 }
 
+/*
+ * call-seq:
+ *   io.echo = flag
+ *
+ * Enables/disables echo back.
+ */
 static VALUE
 console_set_echo(VALUE io, VALUE f)
 {
@@ -268,6 +300,12 @@ console_set_echo(VALUE io, VALUE f)
     return io;
 }
 
+/*
+ * call-seq:
+ *   io.echo?       -> true or false
+ *
+ * Returns +true+ if echo back is enabled.
+ */
 static VALUE
 console_echo_p(VALUE io)
 {
@@ -300,6 +338,12 @@ typedef CONSOLE_SCREEN_BUFFER_INFO rb_console_size_t;
 #endif
 
 #ifdef USE_CONSOLE_GETSIZE
+/*
+ * call-seq:
+ *   io.winsize     -> [rows, columns]
+ *
+ * Returns console size.
+ */
 static VALUE
 console_winsize(VALUE io)
 {
@@ -324,6 +368,12 @@ console_winsize(VALUE io)
 }
 #endif
 
+/*
+ * call-seq:
+ *   io.iflush
+ *
+ * Flushes input buffer in kernel.
+ */
 static VALUE
 console_iflush(VALUE io)
 {
@@ -338,6 +388,12 @@ console_iflush(VALUE io)
     return io;
 }
 
+/*
+ * call-seq:
+ *   io.oflush
+ *
+ * Flushes output buffer in kernel.
+ */
 static VALUE
 console_oflush(VALUE io)
 {
@@ -352,6 +408,12 @@ console_oflush(VALUE io)
     return io;
 }
 
+/*
+ * call-seq:
+ *   io.ioflush
+ *
+ * Flushes input and output buffers in kernel.
+ */
 static VALUE
 console_ioflush(VALUE io)
 {
@@ -375,6 +437,12 @@ console_ioflush(VALUE io)
     return io;
 }
 
+/*
+ * call-seq:
+ *   IO.console      -> #<File:/dev/tty>
+ *
+ * Returns an File instance opened console.
+ */
 static VALUE
 console_dev(VALUE klass)
 {
@@ -433,6 +501,9 @@ console_dev(VALUE klass)
     return con;
 }
 
+/*
+ * IO console methods
+ */
 void
 Init_console(void)
 {
