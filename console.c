@@ -21,6 +21,19 @@ typedef struct termios conmode;
 typedef struct termio conmode;
 # define setattr(fd, t) (ioctl(fd, TCSETAF, t) == 0)
 # define getattr(fd, t) (ioctl(fd, TCGETA, t) == 0)
+#elif defined HAVE_SGTTY_H
+# include <sgtty.h>
+typedef struct sgttyb conmode;
+# ifdef HAVE_STTY
+# define setattr(fd, t)  (stty(fd, t) == 0)
+# else
+# define setattr(fd, t)  (ioctl((fd), TIOCSETP, (t)) == 0)
+# endif
+# ifdef HAVE_GTTY
+# define getattr(fd, t)  (gtty(fd, t) == 0)
+# else
+# define getattr(fd, t)  (ioctl((fd), TIOCGETP, (t)) == 0)
+# endif
 #elif defined _WIN32
 #include <winioctl.h>
 typedef DWORD conmode;
@@ -43,6 +56,9 @@ set_rawmode(t)
     t->c_lflag &= ~(ECHO|ECHONL|ICANON|ISIG|IEXTEN);
     t->c_cflag &= ~(CSIZE|PARENB);
     t->c_cflag |= CS8;
+#elif defined HAVE_SGTTY_H
+    t->sg_flags &= ~ECHO;
+    t->sg_flags |= RAW;
 #elif defined _WIN32
     *t = 0;
 #endif
@@ -56,6 +72,8 @@ set_noecho(t)
 {
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     t->c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
+#elif defined HAVE_SGTTY_H
+    t->sg_flags &= ~ECHO;
 #elif defined _WIN32
     *t &= ~ENABLE_ECHO_INPUT;
 #endif
@@ -77,38 +95,53 @@ set_ttymode(fd, t, setter)
 static VALUE
 ttymode(io, func, setter)
     VALUE io;
-    VALUE func _((VALUE));
+    VALUE (*func) _((VALUE));
     void (*setter) _((conmode *));
 {
     OpenFile *fptr;
-    int fd1 = -1, fd2 = -1, status = 0;
+    int fd1 = -1, fd2 = -1, status = 0, error = 0;
     conmode t[2];
     VALUE result = Qnil;
 
     GetOpenFile(io, fptr);
     if (fptr->f) {
-	if (set_ttymode(fileno(fptr->f), t+0, setter))
+	if (set_ttymode(fileno(fptr->f), t+0, setter)) {
 	    fd1 = fileno(fptr->f);
-	else
+	}
+	else {
+	    error = errno;
 	    status = -1;
+	}
     }
     if (fptr->f2 && status == 0) {
-	if (set_ttymode(fileno(fptr->f2), t+1, setter))
+	if (set_ttymode(fileno(fptr->f2), t+1, setter)) {
 	    fd2 = fileno(fptr->f2);
-	else
+	}
+	else {
+	    error = errno;
 	    status = -1;
+	}
     }
     if (status == 0) {
 	result = rb_protect(func, io, &status);
     }
     if (fptr->f && fd1 == fileno(fptr->f)) {
-	if (!setattr(fd1, t+0)) status = -1;
+	if (!setattr(fd1, t+0)) {
+	    error = errno;
+	    status = -1;
+	}
     }
     if (fptr->f2 && fd2 == fileno(fptr->f2)) {
-	if (!setattr(fd2, t+1)) status = -1;
+	if (!setattr(fd2, t+1)) {
+	    error = errno;
+	    status = -1;
+	}
     }
     if (status) {
-	if (status == -1) rb_sys_fail(0);
+	if (status == -1) {
+	    errno = error;
+	    rb_sys_fail(0);
+	}
 	rb_jump_tag(status);
     }
     return result;
@@ -209,7 +242,7 @@ console_dev(klass)
     }
     {
 	VALUE args[2];
-#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H || defined HAVE_SGTTY_H
 	args[0] = rb_str_new2("/dev/tty");
 	args[1] = INT2FIX(O_RDWR);
 	con = rb_class_new_instance(2, args, klass);
