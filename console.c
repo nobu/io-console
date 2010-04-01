@@ -18,14 +18,6 @@ typedef OpenFile rb_io_t;
 #include <sys/ioctl.h>
 #endif
 
-#ifdef GetReadFile
-#define GetReadFileNo(fptr) fileno(GetReadFile(fptr))
-#define GetWriteFileNo(fptr) fileno(GetWriteFile(fptr))
-#else
-#define GetReadFileNo(fptr) ((fptr)->fd)
-#define GetWriteFileNo(fptr) ((fptr)->fd)
-#endif
-
 #if defined HAVE_TERMIOS_H
 # include <termios.h>
 typedef struct termios conmode;
@@ -75,6 +67,9 @@ getattr(int fd, conmode *t)
     if (!x) errno = LAST_ERROR;
     return x;
 }
+#endif
+#ifndef SET_LAST_ERROR
+#define SET_LAST_ERROR (0)
 #endif
 
 static ID id_getc, id_console;
@@ -147,55 +142,70 @@ set_ttymode(int fd, conmode *t, void (*setter)(conmode *))
 }
 
 #ifdef GetReadFile
-#define FD_PER_IO 2
+#define GetReadFD(fptr) fileno(GetReadFile(fptr))
 #else
-#define FD_PER_IO 1
+#define GetReadFD(fptr) ((fptr)->fd)
 #endif
+
+#ifdef GetWriteFile
+#define GetWriteFD(fptr) fileno(GetWriteFile(fptr))
+#else
+static inline int
+get_write_fd(const rb_io_t *fptr)
+{
+    VALUE wio = fptr->tied_io_for_writing;
+    rb_io_t *ofptr;
+    if (!wio) return -1;
+    GetOpenFile(wio, ofptr);
+    return ofptr->fd;
+}
+#define GetWriteFD(fptr) get_write_fd(fptr)
+#endif
+
+#define FD_PER_IO 2
 
 static VALUE
 ttymode(VALUE io, VALUE (*func)(VALUE), void (*setter)(conmode *))
 {
     rb_io_t *fptr;
-    int status = 0;
-#if FD_PER_IO > 1
+    int status = -1;
     int error = 0;
-#endif
     int fd[FD_PER_IO];
     conmode t[FD_PER_IO];
     VALUE result = Qnil;
 
     GetOpenFile(io, fptr);
-    fd[0] = -1;
-#ifdef GetReadFile
-    fd[1] = -1;
-    if (fptr->f) {
-	if (set_ttymode(fileno(fptr->f), t+0, setter)) {
-	    fd[0] = fileno(fptr->f);
+    fd[0] = GetReadFD(fptr);
+    if (fd[0] != -1) {
+	if (set_ttymode(fd[0], t+0, setter)) {
+	    status = 0;
 	}
 	else {
 	    error = errno;
-	    status = -1;
+	    fd[0] = -1;
 	}
     }
-    if (fptr->f2 && status == 0) {
-	if (set_ttymode(fileno(fptr->f2), t+1, setter)) {
-	    fd[1] = fileno(fptr->f2);
+    fd[1] = GetWriteFD(fptr);
+    if (fd[1] != -1 && fd[1] != fd[0]) {
+	if (set_ttymode(fd[1], t+1, setter)) {
+	    status = 0;
 	}
 	else {
 	    error = errno;
-	    status = -1;
+	    fd[1] = -1;
 	}
     }
     if (status == 0) {
 	result = rb_protect(func, io, &status);
     }
-    if (fptr->f && fd[0] == fileno(fptr->f)) {
+    GetOpenFile(io, fptr);
+    if (fd[0] != -1 && fd[0] == GetReadFD(fptr)) {
 	if (!setattr(fd[0], t+0)) {
 	    error = errno;
 	    status = -1;
 	}
     }
-    if (fptr->f2 && fd[1] == fileno(fptr->f2)) {
+    if (fd[1] != -1 && fd[1] != fd[0] && fd[1] == GetWriteFD(fptr)) {
 	if (!setattr(fd[1], t+1)) {
 	    error = errno;
 	    status = -1;
@@ -208,23 +218,6 @@ ttymode(VALUE io, VALUE (*func)(VALUE), void (*setter)(conmode *))
 	}
 	rb_jump_tag(status);
     }
-#else
-    if (fptr->fd != -1) {
-	if (!set_ttymode(fptr->fd, t+0, setter)) {
-	    rb_sys_fail("set_ttymode");
-	}
-	fd[0] = fptr->fd;
-    }
-    result = rb_protect(func, io, &status);
-    if (fd[0] != -1 && fd[0] == fptr->fd) {
-	if (!setattr(fd[0], t+0)) {
-	    rb_sys_fail("restore_ttymode");
-	}
-    }
-    if (status) {
-	rb_jump_tag(status);
-    }
-#endif
     return result;
 }
 
@@ -235,7 +228,7 @@ console_raw(VALUE io)
 }
 
 static VALUE
-getch(VALUE io)
+getc_call(VALUE io)
 {
     return rb_funcall2(io, id_getc, 0, 0);
 }
@@ -243,7 +236,7 @@ getch(VALUE io)
 static VALUE
 console_getch(VALUE io)
 {
-    return ttymode(io, (VALUE (*)(VALUE))getch, set_rawmode);
+    return ttymode(io, getc_call, set_rawmode);
 }
 
 static VALUE
@@ -260,7 +253,7 @@ console_set_echo(VALUE io, VALUE f)
     int fd;
 
     GetOpenFile(io, fptr);
-    fd = GetReadFileNo(fptr);
+    fd = GetWriteFD(fptr);
     if (!getattr(fd, &t)) rb_sys_fail(0);
     if (RTEST(f))
 	set_echo(&t);
@@ -278,7 +271,7 @@ console_echo_p(VALUE io)
     int fd;
 
     GetOpenFile(io, fptr);
-    fd = GetReadFileNo(fptr);
+    fd = GetWriteFD(fptr);
     if (!getattr(fd, &t)) rb_sys_fail(0);
     return echo_p(&t) ? Qtrue : Qfalse;
 }
@@ -333,7 +326,7 @@ console_iflush(VALUE io)
     int fd;
 
     GetOpenFile(io, fptr);
-    fd = GetReadFileNo(fptr);
+    fd = GetReadFD(fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     if (tcflush(fd, TCIFLUSH)) rb_sys_fail(0);
 #endif
@@ -347,11 +340,7 @@ console_oflush(VALUE io)
     int fd;
 
     GetOpenFile(io, fptr);
-#ifdef GetWriteFile
-    fd = fileno(GetWriteFile(fptr));
-#else
-    fd = fptr->fd;
-#endif
+    fd = GetWriteFD(fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     if (tcflush(fd, TCOFLUSH)) rb_sys_fail(0);
 #endif
@@ -362,23 +351,21 @@ static VALUE
 console_ioflush(VALUE io)
 {
     rb_io_t *fptr;
-#ifdef GetReadFile
-    FILE *f2;
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    int fd1, fd2;
 #endif
 
     GetOpenFile(io, fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
-#ifdef GetWriteFile
-    if (fptr->f2) {
-	if (tcflush(GetReadFileNo(fptr), TCIFLUSH)) rb_sys_fail(0);
-	if (tcflush(GetWriteFileNo(fptr), TCOFLUSH)) rb_sys_fail(0);
+    fd1 = GetReadFD(fptr);
+    fd2 = GetWriteFD(fptr);
+    if (fd2 != -1 && fd1 != fd2) {
+	if (tcflush(fd1, TCIFLUSH)) rb_sys_fail(0);
+	if (tcflush(fd2, TCOFLUSH)) rb_sys_fail(0);
     }
     else {
-	if (tcflush(GetReadFileNo(fptr), TCIOFLUSH)) rb_sys_fail(0);
+	if (tcflush(fd1, TCIOFLUSH)) rb_sys_fail(0);
     }
-#else
-    if (tcflush(GetReadFileNo(fptr), TCIOFLUSH)) rb_sys_fail(0);
-#endif
 #endif
     return io;
 }
@@ -392,13 +379,7 @@ console_dev(VALUE klass)
     if (rb_const_defined(klass, id_console)) {
 	con = rb_const_get(klass, id_console);
 	if (TYPE(con) == T_FILE) {
-	    if ((fptr = RFILE(con)->fptr) &&
-#ifdef GetReadFile
-		fptr->f
-#else
-		fptr->fd >= 0
-#endif
-		)
+	    if ((fptr = RFILE(con)->fptr) && GetReadFD(fptr) != -1)
 		return con;
 	}
 	rb_mod_remove_const(klass, ID2SYM(id_console));
