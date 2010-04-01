@@ -1,8 +1,8 @@
 # -*- ruby -*-
 Gem::Specification.new do |s|
   s.name = "io-console"
-  s.version = "0.1"
-  s.date = "2007-10-02"
+  s.version = "0.2"
+  s.date = "2008-09-05"
   s.summary = "Console interface"
   s.email = "nobu@ruby-lang.org"
   s.description = ""
