@@ -79,6 +79,32 @@ set_noecho(t)
 #endif
 }
 
+static void
+set_echo(t)
+    conmode *t;
+{
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    t->c_lflag |= (ECHO | ECHOE | ECHOK | ECHONL);
+#elif defined HAVE_SGTTY_H
+    t->sg_flags |= ECHO;
+#elif defined _WIN32
+    *t |= ENABLE_ECHO_INPUT;
+#endif
+}
+
+static int
+echo_p(t)
+    conmode *t;
+{
+#if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+    return (t->c_lflag & (ECHO | ECHOE | ECHOK | ECHONL)) != 0;
+#elif defined HAVE_SGTTY_H
+    return (t->sg_flags & ECHO) != 0;
+#elif defined _WIN32
+    return (*t & ENABLE_ECHO_INPUT) != 0;
+#endif
+}
+
 static int
 set_ttymode(fd, t, setter)
     int fd;
@@ -104,6 +130,7 @@ ttymode(io, func, setter)
     VALUE result = Qnil;
 
     GetOpenFile(io, fptr);
+#ifdef GetReadFile
     if (fptr->f) {
 	if (set_ttymode(fileno(fptr->f), t+0, setter)) {
 	    fd1 = fileno(fptr->f);
@@ -144,6 +171,23 @@ ttymode(io, func, setter)
 	}
 	rb_jump_tag(status);
     }
+#else
+    if (fptr->fd != -1) {
+	if (!set_ttymode(fptr->fd, t+0, setter)) {
+	    rb_sys_fail(0);
+	}
+	fd1 = fptr->fd;
+    }
+    result = rb_protect(func, io, &status);
+    if (fd1 != -1 && fd1 == fptr->fd) {
+	if (!setattr(fd1, t+0)) {
+	    rb_sys_fail(0);
+	}
+    }
+    if (status) {
+	rb_jump_tag(status);
+    }
+#endif
     return result;
 }
 
@@ -176,16 +220,61 @@ console_noecho(io)
 }
 
 static VALUE
+console_set_echo(io, f)
+    VALUE io, f;
+{
+    conmode t;
+    OpenFile *fptr;
+    int fd;
+
+    GetOpenFile(io, fptr);
+#ifdef GetReadFile
+    fd = fileno(fptr->f);
+#else
+    fd = fptr->fd;
+#endif
+    if (!getattr(fd, &t)) rb_sys_fail(0);
+    if (RTEST(f))
+	set_echo(&t);
+    else
+	set_noecho(&t);
+    if (!setattr(fd, &t)) rb_sys_fail(0);
+    return io;
+}
+
+static VALUE
+console_echo_p(io)
+    VALUE io;
+{
+    conmode t;
+    OpenFile *fptr;
+    int fd;
+
+    GetOpenFile(io, fptr);
+#ifdef GetReadFile
+    fd = fileno(fptr->f);
+#else
+    fd = fptr->fd;
+#endif
+    if (!getattr(fd, &t)) rb_sys_fail(0);
+    return echo_p(&t) ? Qtrue : Qfalse;
+}
+
+static VALUE
 console_iflush(io)
     VALUE io;
 {
     OpenFile *fptr;
-    FILE *f;
+    int fd;
 
     GetOpenFile(io, fptr);
-    f = GetReadFile(fptr);
+#ifdef GetReadFile
+    fd = fileno(GetReadFile(fptr));
+#else
+    fd = fptr->fd;
+#endif
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
-    if (tcflush(fileno(f), TCIFLUSH)) rb_sys_fail(0);
+    if (tcflush(fd, TCIFLUSH)) rb_sys_fail(0);
 #endif
     return io;
 }
@@ -195,12 +284,16 @@ console_oflush(io)
     VALUE io;
 {
     OpenFile *fptr;
-    FILE *f;
+    int fd;
 
     GetOpenFile(io, fptr);
-    f = GetWriteFile(fptr);
+#ifdef GetWriteFile
+    fd = fileno(GetWriteFile(fptr));
+#else
+    fd = fptr->fd;
+#endif
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
-    if (tcflush(fileno(f), TCOFLUSH)) rb_sys_fail(0);
+    if (tcflush(fd, TCOFLUSH)) rb_sys_fail(0);
 #endif
     return io;
 }
@@ -210,10 +303,14 @@ console_ioflush(io)
     VALUE io;
 {
     OpenFile *fptr;
-    FILE *f1, *f2;
+    FILE *f1;
+#ifdef GetReadFile
+    FILE *f2;
+#endif
 
     GetOpenFile(io, fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
+#ifdef GetReadFile
     if (fptr->f2) {
 	if (tcflush(fileno(fptr->f), TCIFLUSH)) rb_sys_fail(0);
 	if (tcflush(fileno(fptr->f2), TCOFLUSH)) rb_sys_fail(0);
@@ -221,6 +318,9 @@ console_ioflush(io)
     else {
 	if (tcflush(fileno(fptr->f), TCIOFLUSH)) rb_sys_fail(0);
     }
+#else
+    if (tcflush(fptr->fd, TCIOFLUSH)) rb_sys_fail(0);
+#endif
 #endif
     return io;
 }
@@ -235,7 +335,13 @@ console_dev(klass)
     if (rb_const_defined(klass, id_console)) {
 	con = rb_const_get(klass, id_console);
 	if (TYPE(con) == T_FILE) {
-	    if ((fptr = RFILE(con)->fptr) && fptr->f)
+	    if ((fptr = RFILE(con)->fptr) &&
+#ifdef GetReadFile
+		fptr->f
+#else
+		fptr->fd >= 0
+#endif
+		)
 		return con;
 	}
 	rb_mod_remove_const(klass, ID2SYM(id_console));
@@ -243,10 +349,12 @@ console_dev(klass)
     {
 	VALUE args[2];
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H || defined HAVE_SGTTY_H
-	args[0] = rb_str_new2("/dev/tty");
-	args[1] = INT2FIX(O_RDWR);
-	con = rb_class_new_instance(2, args, klass);
+#define CONSOLE_DEVISE "/dev/tty"
 #elif defined _WIN32
+#define CONSOLE_DEVISE "CON$"
+#endif
+
+#if defined GetReadFile && defined _WIN32
 	VALUE out;
 	OpenFile *ofptr;
 
@@ -255,7 +363,12 @@ console_dev(klass)
 	out = rb_class_new_instance(2, args, klass);
 	args[0] = rb_str_new2("CONIN$");
 	args[1] = INT2FIX(O_RDONLY);
+#else
+	args[0] = rb_str_new2(CONSOLE_DEVISE);
+	args[1] = INT2FIX(O_RDWR);
+#endif
 	con = rb_class_new_instance(2, args, klass);
+#if defined GetReadFile && defined _WIN32
 	GetOpenFile(con, fptr);
 	GetOpenFile(out, ofptr);
 	fptr->f2 = ofptr->f;
@@ -274,6 +387,8 @@ Init_console()
     id_console = rb_intern("console");
     rb_define_method(rb_cIO, "raw", console_raw, 0);
     rb_define_method(rb_cIO, "getch", console_getch, 0);
+    rb_define_method(rb_cIO, "echo=", console_set_echo, 1);
+    rb_define_method(rb_cIO, "echo?", console_echo_p, 0);
     rb_define_method(rb_cIO, "noecho", console_noecho, 0);
     rb_define_method(rb_cIO, "iflush", console_iflush, 0);
     rb_define_method(rb_cIO, "oflush", console_oflush, 0);
