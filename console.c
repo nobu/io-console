@@ -10,6 +10,18 @@
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
 #endif
+#include <sys/ioctl.h>
+
+#ifndef HAVE_RB_IO_T
+typedef OpenFile rb_io_t;
+#endif
+#ifdef GetReadFile
+#define GetReadFileNo(fptr) fileno(GetReadFile(fptr))
+#define GetWriteFileNo(fptr) fileno(GetWriteFile(fptr))
+#else
+#define GetReadFileNo(fptr) ((fptr)->fd)
+#define GetWriteFileNo(fptr) ((fptr)->fd)
+#endif
 
 #if defined HAVE_TERMIOS_H
 # include <termios.h>
@@ -41,7 +53,7 @@ typedef DWORD conmode;
 #  define getattr(fd, t) GetConsoleMode((HANDLE)rb_w32_get_osfhandle(fd), t)
 #endif
 
-static ID id_getc, id_ttydev, id_console;
+static ID id_getc, id_console;
 
 #ifdef HAVE_CFMAKERAW
 #define set_rawmode cfmakeraw
@@ -124,8 +136,11 @@ ttymode(io, func, setter)
     VALUE (*func) _((VALUE));
     void (*setter) _((conmode *));
 {
-    OpenFile *fptr;
-    int fd1 = -1, fd2 = -1, status = 0, error = 0;
+    rb_io_t *fptr;
+    int fd1 = -1, status = 0;
+#ifdef GetReadFile
+    int fd2 = -1, error = 0;
+#endif
     conmode t[2];
     VALUE result = Qnil;
 
@@ -224,15 +239,11 @@ console_set_echo(io, f)
     VALUE io, f;
 {
     conmode t;
-    OpenFile *fptr;
+    rb_io_t *fptr;
     int fd;
 
     GetOpenFile(io, fptr);
-#ifdef GetReadFile
-    fd = fileno(fptr->f);
-#else
-    fd = fptr->fd;
-#endif
+    fd = GetReadFileNo(fptr);
     if (!getattr(fd, &t)) rb_sys_fail(0);
     if (RTEST(f))
 	set_echo(&t);
@@ -247,15 +258,11 @@ console_echo_p(io)
     VALUE io;
 {
     conmode t;
-    OpenFile *fptr;
+    rb_io_t *fptr;
     int fd;
 
     GetOpenFile(io, fptr);
-#ifdef GetReadFile
-    fd = fileno(fptr->f);
-#else
-    fd = fptr->fd;
-#endif
+    fd = GetReadFileNo(fptr);
     if (!getattr(fd, &t)) rb_sys_fail(0);
     return echo_p(&t) ? Qtrue : Qfalse;
 }
@@ -264,15 +271,11 @@ static VALUE
 console_iflush(io)
     VALUE io;
 {
-    OpenFile *fptr;
+    rb_io_t *fptr;
     int fd;
 
     GetOpenFile(io, fptr);
-#ifdef GetReadFile
-    fd = fileno(GetReadFile(fptr));
-#else
-    fd = fptr->fd;
-#endif
+    fd = GetReadFileNo(fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
     if (tcflush(fd, TCIFLUSH)) rb_sys_fail(0);
 #endif
@@ -283,7 +286,7 @@ static VALUE
 console_oflush(io)
     VALUE io;
 {
-    OpenFile *fptr;
+    rb_io_t *fptr;
     int fd;
 
     GetOpenFile(io, fptr);
@@ -302,35 +305,70 @@ static VALUE
 console_ioflush(io)
     VALUE io;
 {
-    OpenFile *fptr;
-    FILE *f1;
-#ifdef GetReadFile
-    FILE *f2;
-#endif
+    rb_io_t *fptr;
 
     GetOpenFile(io, fptr);
 #if defined HAVE_TERMIOS_H || defined HAVE_TERMIO_H
-#ifdef GetReadFile
+#ifdef GetWriteFile
     if (fptr->f2) {
-	if (tcflush(fileno(fptr->f), TCIFLUSH)) rb_sys_fail(0);
-	if (tcflush(fileno(fptr->f2), TCOFLUSH)) rb_sys_fail(0);
+	if (tcflush(GetReadFileNo(fptr), TCIFLUSH)) rb_sys_fail(0);
+	if (tcflush(GetWriteFileNo(fptr), TCOFLUSH)) rb_sys_fail(0);
     }
     else {
-	if (tcflush(fileno(fptr->f), TCIOFLUSH)) rb_sys_fail(0);
+	if (tcflush(GetReadFileNo(fptr), TCIOFLUSH)) rb_sys_fail(0);
     }
 #else
-    if (tcflush(fptr->fd, TCIOFLUSH)) rb_sys_fail(0);
+    if (tcflush(GetReadFileNo(fptr), TCIOFLUSH)) rb_sys_fail(0);
 #endif
 #endif
     return io;
 }
+
+#ifdef HAVE_TERMIOS_H
+static VALUE
+console_get_winsize(io)
+    VALUE io;
+{
+    rb_io_t *fptr;
+    struct winsize w;
+
+    GetOpenFile(io, fptr);
+    if (ioctl(GetReadFileNo(fptr), TIOCGWINSZ, &w) < 0) rb_sys_fail(0);
+    return rb_ary_new3(4,
+		       INT2NUM(w.ws_row), INT2NUM(w.ws_col),
+		       INT2NUM(w.ws_xpixel), INT2NUM(w.ws_ypixel));
+}
+
+static VALUE
+console_set_winsize(io, size)
+    VALUE io, size;
+{
+    rb_io_t *fptr;
+    struct winsize w;
+    VALUE row, col, xpixel, ypixel;
+
+    GetOpenFile(io, fptr);
+    size = rb_Array(size);
+    rb_scan_args(RARRAY_LEN(size), RARRAY_PTR(size), "22",
+		 &row, &col, &xpixel, &ypixel);
+    w.ws_row = w.ws_col = w.ws_xpixel = w.ws_ypixel = 0;
+#define SET(m) w.ws_##m = NIL_P(m) ? 0 : (unsigned short)NUM2UINT(m)
+    SET(row);
+    SET(col);
+    SET(xpixel);
+    SET(ypixel);
+#undef SET
+    if (ioctl(GetReadFileNo(fptr), TIOCSWINSZ, &w) < 0) rb_sys_fail(0);
+    return io;
+}
+#endif
 
 static VALUE
 console_dev(klass)
     VALUE klass;
 {
     VALUE con = 0;
-    OpenFile *fptr;
+    rb_io_t *fptr;
 
     if (rb_const_defined(klass, id_console)) {
 	con = rb_const_get(klass, id_console);
@@ -356,7 +394,7 @@ console_dev(klass)
 
 #if defined GetReadFile && defined _WIN32
 	VALUE out;
-	OpenFile *ofptr;
+	rb_io_t *ofptr;
 
 	args[0] = rb_str_new2("CONOUT$");
 	args[1] = INT2FIX(O_WRONLY);
@@ -393,5 +431,9 @@ Init_console()
     rb_define_method(rb_cIO, "iflush", console_iflush, 0);
     rb_define_method(rb_cIO, "oflush", console_oflush, 0);
     rb_define_method(rb_cIO, "ioflush", console_ioflush, 0);
+#ifdef HAVE_TERMIOS_H
+    rb_define_method(rb_cIO, "winsize", console_get_winsize, 0);
+    rb_define_method(rb_cIO, "winsize=", console_set_winsize, 1);
+#endif
     rb_define_singleton_method(rb_cFile, "console", console_dev, 0);
 }
